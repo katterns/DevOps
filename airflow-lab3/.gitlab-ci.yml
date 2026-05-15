@@ -1,0 +1,57 @@
+stages:
+  - test
+  - build
+  - deploy
+
+test-job:
+  stage: test
+  image: alpine:latest
+  tags:
+    - airflow-spark
+  script:
+    - |
+      set -eu
+      for path in dags spark; do
+        if [ ! -d "$path" ]; then
+          echo "Нет директории $path/"
+          exit 1
+        fi
+      done
+    - test -f Dockerfile
+
+build-job:
+  stage: build
+  image: docker:latest
+  tags:
+    - airflow-spark
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+      when: never
+    - when: on_success
+  script:
+    - docker build -t airflow-lab3-airflow .
+
+deploy-job:
+  stage: deploy
+  image: docker:latest
+  tags:
+    - airflow-spark
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "develop"'
+      when: on_success
+    - when: manual
+  script:
+    - apk add --no-cache docker-compose
+    - docker-compose down --remove-orphans || true
+    - docker-compose up -d --build
+    - docker ps
+
+clear-job:
+  stage: deploy
+  image: docker:latest
+  tags:
+    - airflow-spark
+  when: manual
+  script:
+    - apk add --no-cache docker-compose
+    - docker-compose down -v --remove-orphans
