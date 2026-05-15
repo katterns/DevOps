@@ -4,6 +4,7 @@
 
 ## Структура проекта
 
+```
 .
 ├── Dockerfile              # Кастомный образ Airflow
 ├── docker-compose.yml      # Конфигурация сервисов
@@ -12,6 +13,7 @@
 ├── logs/                   # Логи Airflow
 ├── plugins/                # Плагины
 └── README.md              # Документация
+```
 
 ## Внесённые изменения в docker-compose.yml
 

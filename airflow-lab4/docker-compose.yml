@@ -1,0 +1,147 @@
+x-airflow-common: &airflow-common
+  build: .
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__WEBSERVER__SECRET_KEY: 'your-secret-key-change-in-production'
+    _AIRFLOW_WWW_USER_USERNAME: airflow
+    _AIRFLOW_WWW_USER_PASSWORD: airflow
+    AIRFLOW_CONN_SPARK_DEFAULT: 'spark://spark-master:7077?deploy_mode=cluster'
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./spark:/opt/airflow/spark
+  depends_on:
+    postgres:
+      condition: service_healthy
+    spark-master:
+      condition: service_started
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  spark-master:
+    image: apache/spark:3.4.0
+    hostname: spark-master
+    user: root
+    ports:
+      - '14040:8080'
+      - '17077:7077'
+    command: '/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master'
+    environment:
+      - SPARK_LOG_DIR=/opt/spark/logs
+    volumes:
+      - ./spark:/opt/airflow/spark
+      - ./spark-logs:/opt/spark/logs
+      - ./spark/metrics.properties:/opt/spark/conf/metrics.properties
+    restart: always
+
+  spark-worker:
+    image: apache/spark:3.4.0
+    hostname: spark-worker
+    user: root
+    depends_on:
+      - spark-master
+    ports:
+      - "18083:8081"
+    command: '/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077'
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_LOG_DIR=/opt/spark/logs
+    volumes:
+      - ./spark:/opt/airflow/spark
+      - ./spark-logs:/opt/spark/logs
+      - ./spark/metrics.properties:/opt/spark/conf/metrics.properties
+    restart: always
+
+  loki:
+    image: grafana/loki:3.2.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: always
+
+  alloy:
+    image: grafana/alloy:v1.5.1
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./logs:/opt/logs/airflow
+      - ./spark-logs:/opt/logs/spark
+      - ./alloy.conf:/etc/alloy/config.alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    depends_on:
+      - loki
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    restart: always
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - loki
+      - prometheus
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    command: db migrate
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "18082:8080"
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+
+volumes:
+  postgres-db-volume:
